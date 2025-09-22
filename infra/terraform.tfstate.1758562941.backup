@@ -1,0 +1,60 @@
+{
+  "version": 4,
+  "terraform_version": "1.13.1",
+  "serial": 50,
+  "lineage": "62d84d75-848b-90fc-cde3-0728a4855fa8",
+  "outputs": {},
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "aws_ecr_repository",
+      "name": "this",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "arn": "arn:aws:ecr:us-east-1:097635932419:repository/myapp",
+            "encryption_configuration": [
+              {
+                "encryption_type": "AES256",
+                "kms_key": ""
+              }
+            ],
+            "force_delete": null,
+            "id": "myapp",
+            "image_scanning_configuration": [
+              {
+                "scan_on_push": true
+              }
+            ],
+            "image_tag_mutability": "MUTABLE",
+            "image_tag_mutability_exclusion_filter": [],
+            "name": "myapp",
+            "region": "us-east-1",
+            "registry_id": "097635932419",
+            "repository_url": "097635932419.dkr.ecr.us-east-1.amazonaws.com/myapp",
+            "tags": {
+              "Name": "docker-ecs-deployment-ecr",
+              "Project": "docker-ecs-deployment"
+            },
+            "tags_all": {
+              "Name": "docker-ecs-deployment-ecr",
+              "Project": "docker-ecs-deployment"
+            },
+            "timeouts": null
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "identity": {
+            "account_id": "097635932419",
+            "name": "myapp",
+            "region": "us-east-1"
+          },
+          "private": "eyJlMmJmYjczMC1lY2FhLTExZTYtOGY4OC0zNDM2M2JjN2M0YzAiOnsiZGVsZXRlIjoxMjAwMDAwMDAwMDAwfX0="
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}

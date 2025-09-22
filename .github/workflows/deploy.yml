@@ -1,0 +1,58 @@
+name: Build & Deploy to ECS
+
+on:
+  # Trigger this workflow whenever code is pushed to the "main" branch
+  push:
+    branches: [ main ]
+
+  # Allow running manually from the GitHub Actions UI
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 097635932419.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: myapp
+  CLUSTER_NAME: docker-ecs-deployment-cluster
+  SERVICE_NAME: docker-ecs-deployment-svc
+  IMAGE_TAG: latest   # You can replace with ${{ github.sha }} for unique image tags
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest   # This job will run inside a GitHub Actions Ubuntu runner
+
+    steps:
+      # Step 1: Checkout your source code so Docker can use the Dockerfile
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # Step 2: Configure AWS credentials (from GitHub repository secrets)
+      # You need to add AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY into your repo Settings → Secrets
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Step 3: Authenticate Docker client to Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Step 4: Build and push Docker image
+      # --platform linux/amd64 ensures compatibility with ECS Fargate (X86_64 architecture)
+      - name: Build, tag, and push image to Amazon ECR
+        run: |
+          docker buildx create --use --name mybuilder || true
+          docker buildx build --platform linux/amd64 \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            --push .
+
+      # Step 5: Force ECS service to pull the new image and redeploy tasks
+      - name: Deploy new task to ECS service
+        run: |
+          aws ecs update-service \
+            --cluster $CLUSTER_NAME \
+            --service $SERVICE_NAME \
+            --force-new-deployment \
+            --region $AWS_REGION
