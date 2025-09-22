@@ -39,11 +39,12 @@ jobs:
 
       - name: Build and push Docker image (latest + sha)
         run: |
-          docker buildx create --use --name mybuilder || true
-          docker buildx build --platform linux/amd64 \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG \
-            --push .
+             docker buildx create --use --name mybuilder || true
+             docker buildx build --platform linux/amd64 \
+             -f infra/Dockerfile infra \
+             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG \
+             --push
 
       - name: Force ECS service to deploy new image
         run: |
