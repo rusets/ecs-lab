@@ -1,9 +1,15 @@
-name: Build & Deploy to ECS (OIDC Least-Privilege)
+name: Infra + App Deploy (Terraform + ECS)
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      action:
+        description: "Choose 'destroy' to tear down the stack. Leave empty to deploy."
+        required: false
+        default: ""
+        type: string
 
 env:
   AWS_REGION: us-east-1
@@ -13,40 +19,101 @@ env:
   SERVICE_NAME: docker-ecs-deployment-svc
   IMAGE_TAG: latest
   IMAGE_SHA_TAG: ${{ github.sha }}
+  TF_WORKING_DIR: infra
+
+permissions:
+  id-token: write     # OIDC
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  terraform:
+    name: Terraform plan/apply or destroy
     runs-on: ubuntu-latest
-
-    permissions:
-      id-token: write    # REQUIRED for OIDC
-      contents: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Get short-lived AWS creds via OIDC (assumes the role we created)
-      - name: Configure AWS credentials via OIDC
+      - name: Configure AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Cache Terraform dirs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.TF_WORKING_DIR }}/.terraform
+            ~/.terraform.d/plugin-cache
+          key: tf-${{ runner.os }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+      # If workflow_dispatch with action=destroy → run destroy and stop here
+      - name: Terraform Destroy (manual)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'destroy' }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform destroy -auto-approve
+
+      # If not destroying → plan+apply
+      - name: Terraform Plan
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.action == 'destroy') }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform Apply
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.action == 'destroy') }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -input=false -auto-approve tfplan
+
+  image_and_deploy:
+    name: Build & Push Image, ECS Deploy
+    needs: terraform
+    runs-on: ubuntu-latest
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.action == 'destroy') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push Docker image (latest + sha)
         run: |
-             docker buildx create --use --name mybuilder || true
-             docker buildx build --platform linux/amd64 \
-             -f infra/Dockerfile infra \
-             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG \
-             --push
+          docker buildx create --use --name mybuilder || true
+          # Dockerfile и контекст в infra/
+          docker buildx build --platform linux/amd64 \
+            -f infra/Dockerfile infra \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG \
+            --push
 
-      - name: Force ECS service to deploy new image
+      - name: Force new ECS deployment
         run: |
           aws ecs update-service \
             --cluster $CLUSTER_NAME \
