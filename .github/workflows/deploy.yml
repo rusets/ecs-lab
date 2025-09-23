@@ -54,20 +54,28 @@ jobs:
         with:
           terraform_version: 1.9.5
 
-      # ⚠️ Clean stale dirs to avoid provider "file exists" errors
+      # Clean stale dirs to avoid provider "file exists" errors
       - name: Clean previous TF dirs
         run: |
           rm -rf "$TF_WORKING_DIR/.terraform"
           rm -f  "$TF_WORKING_DIR/.terraform.lock.hcl"
 
-      # Cache only plugin cache (NOT .terraform/)
-      - name: Cache Terraform plugin cache
-        uses: actions/cache@v4
+      # <<< FIX: Make sure cache path exists BEFORE using actions/cache >>>
+      - name: Ensure TF plugin cache dir exists
+        run: mkdir -p ~/.terraform.d/plugin-cache
+
+      # Restore TF plugin cache
+      - name: Restore Terraform plugin cache
+        id: tf_cache_restore
+        uses: actions/cache/restore@v4
         with:
           path: ~/.terraform.d/plugin-cache
           key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
+          restore-keys: |
+            tf-plugins-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Terraform Init
+        id: tf_init
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
@@ -95,8 +103,16 @@ jobs:
           TF_IN_AUTOMATION: 1
         run: terraform apply -input=false -no-color -auto-approve tfplan
 
+      # Save TF plugin cache only if init succeeded
+      - name: Save Terraform plugin cache
+        if: ${{ steps.tf_init.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
+
   image_and_deploy:
-    name: Build & Push Image, ECS Redeploy
+    name: Build & Push Image, Update ECS TaskDef & Service
     needs: terraform
     runs-on: ubuntu-latest
     if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
@@ -118,19 +134,92 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push Docker image (latest + sha)
-        run: |
-          docker buildx create --use --name mybuilder || true
-          docker buildx build --platform linux/amd64 \
-            -f infra/Dockerfile infra \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG \
-            --push
+      # <<< Buildx + GHA cache for Docker >>> 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Force ECS new deployment
+      # Build from app/ (not infra/)
+      - name: Build and push Docker image (latest + sha) with cache
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          file: ./app/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_SHA_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Register new Task Definition revision with :${GITHUB_SHA} image
+      - name: Describe current service (get task def)
+        id: svc
+        run: |
+          aws ecs describe-services \
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}" \
+            --region "${AWS_REGION}" \
+            --query "services[0].taskDefinition" \
+            --output text > td_arn.txt
+          echo "td_arn=$(cat td_arn.txt)" >> $GITHUB_OUTPUT
+
+      - name: Get current task definition JSON
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ steps.svc.outputs.td_arn }}" \
+            --region "${AWS_REGION}" \
+            --query "taskDefinition" > taskdef.json
+          cat taskdef.json
+
+      - name: Create new task definition w/ updated image
+        id: register_td
+        run: |
+          IMAGE_SHA="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_SHA_TAG}"
+
+          # build a new containerDefinitions by replacing image in-place
+          NEW_CD=$(jq --arg IMAGE "$IMAGE_SHA" '
+            .containerDefinitions
+            | map(if .name == "app" then .image = $IMAGE else . end)
+          ' taskdef.json)
+
+          # prepare full register payload preserving required fields
+          jq --argjson CD "$NEW_CD" '{
+            family: .family,
+            taskRoleArn: .taskRoleArn,
+            executionRoleArn: .executionRoleArn,
+            networkMode: .networkMode,
+            containerDefinitions: $CD,
+            requiresCompatibilities: .requiresCompatibilities,
+            cpu: .cpu,
+            memory: .memory,
+            runtimePlatform: .runtimePlatform
+          }' taskdef.json > register.json
+
+          echo "=== TaskDef to register ==="
+          cat register.json
+
+          NEW_TD_ARN=$(aws ecs register-task-definition \
+            --region "${AWS_REGION}" \
+            --cli-input-json file://register.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+
+          echo "new_td_arn=${NEW_TD_ARN}" >> $GITHUB_OUTPUT
+          echo "Registered: ${NEW_TD_ARN}"
+
+      - name: Update service to new task definition
         run: |
           aws ecs update-service \
-            --cluster $CLUSTER_NAME \
-            --service $SERVICE_NAME \
-            --force-new-deployment \
-            --region $AWS_REGION
+            --cluster "${CLUSTER_NAME}" \
+            --service "${SERVICE_NAME}" \
+            --task-definition "${{ steps.register_td.outputs.new_td_arn }}" \
+            --region "${AWS_REGION}"
+
+      # (Optional) Wait for rollout to complete
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}" \
+            --region "${AWS_REGION}"
