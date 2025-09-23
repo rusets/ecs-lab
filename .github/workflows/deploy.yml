@@ -122,11 +122,12 @@ jobs:
         uses: actions/checkout@v4
 
       # Least-priv role for ECR push + ECS update
+            # Least-priv role for ECR push + ECS update
       - name: Configure AWS (ecs role)
-         uses: aws-actions/configure-aws-credentials@v4
-         with:
-        role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
-        aws-region: us-east-1
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
+          aws-region: us-east-1
 
       - name: WhoAmI (ecs)
         run: aws sts get-caller-identity
