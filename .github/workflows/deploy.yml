@@ -22,7 +22,7 @@ env:
   TF_WORKING_DIR: infra
 
 permissions:
-  id-token: write     # OIDC
+  id-token: write     # REQUIRED for OIDC
   contents: read
 
 concurrency:
@@ -38,11 +38,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS via OIDC
+      - name: Configure AWS via OIDC (Terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
+          role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: WhoAmI (Terraform)
+        run: aws sts get-caller-identity
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -94,11 +97,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS via OIDC
+      - name: Configure AWS via OIDC (ECS role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: WhoAmI (ECS)
+        run: aws sts get-caller-identity
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
