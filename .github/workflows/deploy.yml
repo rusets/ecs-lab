@@ -54,31 +54,45 @@ jobs:
         with:
           terraform_version: 1.9.5
 
-      - name: Cache Terraform
+      # ⚠️ Clean stale dirs to avoid provider "file exists" errors
+      - name: Clean previous TF dirs
+        run: |
+          rm -rf "$TF_WORKING_DIR/.terraform"
+          rm -f  "$TF_WORKING_DIR/.terraform.lock.hcl"
+
+      # Cache only plugin cache (NOT .terraform/)
+      - name: Cache Terraform plugin cache
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ env.TF_WORKING_DIR }}/.terraform
-            ~/.terraform.d/plugin-cache
-          key: tf-${{ runner.os }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
+          path: ~/.terraform.d/plugin-cache
+          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform init -input=false -upgrade -no-color
+        env:
+          TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
+          TF_IN_AUTOMATION: 1
+        run: terraform init -reconfigure -upgrade -input=false -no-color
 
       - name: Terraform Destroy
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_IN_AUTOMATION: 1
         run: terraform destroy -auto-approve -no-color
 
       - name: Terraform Plan
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_IN_AUTOMATION: 1
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_IN_AUTOMATION: 1
         run: terraform apply -input=false -no-color -auto-approve tfplan
 
   image_and_deploy:
@@ -91,7 +105,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Least-priv ECS role
+      # Least-priv role for ECR push + ECS update
       - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
