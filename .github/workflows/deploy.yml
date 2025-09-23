@@ -74,6 +74,7 @@ jobs:
           TF_IN_AUTOMATION: 1
         run: terraform init -input=false -upgrade -no-color
 
+      # Only on manual destroy runs
       - name: Guard: require DESTROY confirmation
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy' }}
         run: |
@@ -91,8 +92,9 @@ jobs:
           TF_IN_AUTOMATION: 1
         run: terraform destroy -auto-approve -no-color
 
+      # Deploy path: on push, or on manual run when mode != destroy
       - name: Terraform Plan
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy') }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -100,7 +102,7 @@ jobs:
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy') }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -111,7 +113,8 @@ jobs:
     name: Build & Push Image, ECS Redeploy
     needs: terraform
     runs-on: ubuntu-latest
-    if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy') }}
+    # Run only for deploy path
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'destroy') }}
 
     steps:
       - name: Checkout
