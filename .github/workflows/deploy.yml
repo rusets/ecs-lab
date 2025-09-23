@@ -6,16 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Action to run"
+        description: "Choose action: deploy or destroy"
         required: true
         type: choice
-        options: [deploy, destroy]
+        options: [ deploy, destroy ]
         default: deploy
-      confirm:
-        description: "Type DESTROY to confirm (required for destroy)"
-        required: false
-        type: string
-        default: ""
 
 env:
   AWS_REGION: us-east-1
@@ -32,22 +27,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-${{ github.ref }}-${{ github.event.inputs.mode || 'deploy' }}
   cancel-in-progress: false
 
-# -----------------------------
-# DESTROY path (manual only)
-# -----------------------------
 jobs:
-  terraform_destroy:
-    name: Terraform Destroy (manual)
+  terraform:
+    name: Terraform (apply or destroy)
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy' && github.event.inputs.confirm == 'DESTROY' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # BROAD role for infra changes
       - name: Configure AWS (terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -79,55 +71,15 @@ jobs:
         run: terraform init -input=false -upgrade -no-color
 
       - name: Terraform Destroy
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
           TF_IN_AUTOMATION: 1
         run: terraform destroy -auto-approve -no-color
 
-# -----------------------------------
-# DEPLOY path (push OR manual deploy)
-# -----------------------------------
-  terraform_deploy:
-    name: Terraform Plan/Apply (deploy)
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'deploy') }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS (terraform role)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: WhoAmI (terraform)
-        run: aws sts get-caller-identity
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.9.5
-
-      - name: Cache Terraform
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ env.TF_WORKING_DIR }}/.terraform
-            ~/.terraform.d/plugin-cache
-          key: tf-${{ runner.os }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
-
-      - name: Terraform Init
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
-          TF_LOG: INFO
-          TF_IN_AUTOMATION: 1
-        run: terraform init -input=false -upgrade -no-color
-
       - name: Terraform Plan
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -135,6 +87,7 @@ jobs:
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -143,14 +96,15 @@ jobs:
 
   image_and_deploy:
     name: Build & Push Image, ECS Redeploy
-    needs: terraform_deploy
+    needs: terraform
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'deploy') }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # LEAST-PRIV role for push + ECS update
       - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
