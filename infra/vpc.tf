@@ -1,22 +1,35 @@
-# VPC with 2 public subnets (sufficient for ECS + ALB demo)
+# Получаем доступные AZ в регионе
+data "aws_availability_zones" "available" {}
+
+# VPC с 2 public subnet (для ALB + ECS)
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
-  version = "5.21.0"
+  version = "6.2.0" # фиксируем актуальную версию модуля
 
   name = var.project_name
   cidr = var.vpc_cidr
 
-  # Availability Zones (например, us-east-1a и us-east-1b)
-  azs             = ["${var.region}a", "${var.region}b"]
-  public_subnets  = var.public_subnets
-  private_subnets = []
+  # Берём первые две AZ автоматически (например, us-east-1a, us-east-1b)
+  azs            = slice(data.aws_availability_zones.available.names, 0, 2)
+  public_subnets = var.public_subnets
 
+  # Для демо NAT не нужен
   enable_nat_gateway = false
 
-  # ❌ Отключаем Flow Logs, чтобы не было warning и лишних ресурсов
-  enable_flow_log = false
+  # Для ECS/ALB полезно иметь DNS поддержку в VPC
+  enable_dns_hostnames = true
+  enable_dns_support   = true
 
-  tags = {
-    Project = var.project_name
-  }
+  # Потоки VPC логов не включаем, чтобы не тащить CloudWatch Flow Logs и их варнинги
+  # (по умолчанию и так выключено, поэтому просто ничего не указываем)
+  # enable_flow_log = false
+}
+
+# Экспорты, если где-то нужны
+output "vpc_id" {
+  value = module.vpc.vpc_id
+}
+
+output "public_subnets" {
+  value = module.vpc.public_subnets
 }
