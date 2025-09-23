@@ -6,13 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Choose action"
+        description: "Action to run"
         required: true
         type: choice
         options: [deploy, destroy]
         default: deploy
       confirm:
-        description: "Type DESTROY to confirm (only when mode=destroy)"
+        description: "Type DESTROY to confirm (required for destroy)"
         required: false
         type: string
         default: ""
@@ -35,10 +35,14 @@ concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
+# -----------------------------
+# DESTROY path (manual only)
+# -----------------------------
 jobs:
-  terraform:
-    name: Terraform (plan/apply or destroy)
+  terraform_destroy:
+    name: Terraform Destroy (manual)
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy' && github.event.inputs.confirm == 'DESTROY' }}
 
     steps:
       - name: Checkout
@@ -74,27 +78,56 @@ jobs:
           TF_IN_AUTOMATION: 1
         run: terraform init -input=false -upgrade -no-color
 
-      # Only on manual destroy runs
-      - name: Guard: require DESTROY confirmation
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy' }}
-        run: |
-          if [ "${{ github.event.inputs.confirm }}" != "DESTROY" ]; then
-            echo "Refusing to destroy: you must type DESTROY in the confirmation box."
-            exit 1
-          fi
-          echo "Confirmed DESTROY."
-
       - name: Terraform Destroy
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
           TF_IN_AUTOMATION: 1
         run: terraform destroy -auto-approve -no-color
 
-      # Deploy path: on push, or on manual run when mode != destroy
+# -----------------------------------
+# DEPLOY path (push OR manual deploy)
+# -----------------------------------
+  terraform_deploy:
+    name: Terraform Plan/Apply (deploy)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'deploy') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS (terraform role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: WhoAmI (terraform)
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Cache Terraform
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.TF_WORKING_DIR }}/.terraform
+            ~/.terraform.d/plugin-cache
+          key: tf-${{ runner.os }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
+          TF_LOG: INFO
+          TF_IN_AUTOMATION: 1
+        run: terraform init -input=false -upgrade -no-color
+
       - name: Terraform Plan
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -102,7 +135,6 @@ jobs:
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -111,10 +143,9 @@ jobs:
 
   image_and_deploy:
     name: Build & Push Image, ECS Redeploy
-    needs: terraform
+    needs: terraform_deploy
     runs-on: ubuntu-latest
-    # Run only for deploy path
-    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'destroy') }}
+    if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'deploy') }}
 
     steps:
       - name: Checkout
