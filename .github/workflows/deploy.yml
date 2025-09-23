@@ -6,15 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Choose an action"
+        description: "Choose action"
         required: true
         type: choice
-        options:
-          - deploy
-          - destroy
+        options: [deploy, destroy]
         default: deploy
       confirm:
-        description: "Type DESTROY to confirm (only required when mode=destroy)"
+        description: "Type DESTROY to confirm (only when mode=destroy)"
         required: false
         type: string
         default: ""
@@ -34,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-${{ github.ref }}-${{ github.event.inputs.mode || 'deploy' }}
+  group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -52,7 +50,7 @@ jobs:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (terraform role)
+      - name: WhoAmI (terraform)
         run: aws sts get-caller-identity
 
       - name: Setup Terraform
@@ -125,7 +123,7 @@ jobs:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (ecs role)
+      - name: WhoAmI (ecs)
         run: aws sts get-caller-identity
 
       - name: Login to Amazon ECR
