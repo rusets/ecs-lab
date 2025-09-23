@@ -43,8 +43,8 @@ jobs:
       - name: Configure AWS (terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
-          aws-region: ${{ env.AWS_REGION }}
+        role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
+        aws-region: us-east-1
 
       - name: WhoAmI (terraform)
         run: aws sts get-caller-identity
@@ -123,10 +123,10 @@ jobs:
 
       # Least-priv role for ECR push + ECS update
       - name: Configure AWS (ecs role)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
-          aws-region: ${{ env.AWS_REGION }}
+         uses: aws-actions/configure-aws-credentials@v4
+         with:
+        role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
+        aws-region: us-east-1
 
       - name: WhoAmI (ecs)
         run: aws sts get-caller-identity
