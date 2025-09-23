@@ -1,15 +1,23 @@
-name: Infra + App Deploy (Terraform + ECS)
+name: Infra + App (Deploy / Destroy)
 
 on:
   push:
     branches: [ main ]
   workflow_dispatch:
     inputs:
-      action:
-        description: "Choose 'destroy' to tear down the stack. Leave empty to deploy."
+      mode:
+        description: "Choose an action"
+        required: true
+        type: choice
+        options:
+          - deploy
+          - destroy
+        default: deploy
+      confirm:
+        description: "Type DESTROY to confirm (only required when mode=destroy)"
         required: false
-        default: ""
         type: string
+        default: ""
 
 env:
   AWS_REGION: us-east-1
@@ -22,29 +30,31 @@ env:
   TF_WORKING_DIR: infra
 
 permissions:
-  id-token: write     # REQUIRED for OIDC
+  id-token: write
   contents: read
 
+# Keep one run per branch; destroy runs are isolated by mode
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: deploy-${{ github.ref }}-${{ github.event.inputs.mode || 'deploy' }}
   cancel-in-progress: false
 
 jobs:
   terraform:
-    name: Terraform plan/apply or destroy
+    name: Terraform (plan/apply or destroy)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS via OIDC (Terraform role)
+      # Use BROAD terraform role here
+      - name: Configure AWS (terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (Terraform)
+      - name: WhoAmI (terraform)
         run: aws sts get-caller-identity
 
       - name: Setup Terraform
@@ -52,7 +62,7 @@ jobs:
         with:
           terraform_version: 1.9.5
 
-      - name: Cache Terraform dirs
+      - name: Cache Terraform
         uses: actions/cache@v4
         with:
           path: |
@@ -64,46 +74,61 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
-        run: terraform init -input=false
+          TF_LOG: INFO
+          TF_IN_AUTOMATION: 1
+        run: terraform init -input=false -upgrade -no-color
 
-      - name: Terraform Validate
+      - name: Guard: require DESTROY confirmation
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy' }}
+        run: |
+          if [ "${{ inputs.confirm }}" != "DESTROY" ]; then
+            echo "Refusing to destroy: you must type DESTROY in the confirmation box."
+            exit 1
+          fi
+          echo "Confirmed DESTROY."
+
+      - name: Terraform Destroy
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform validate
+        env:
+          TF_LOG: INFO
+          TF_IN_AUTOMATION: 1
+        run: terraform destroy -auto-approve -no-color
 
-      # If workflow_dispatch with action=destroy → run destroy and stop here
-      - name: Terraform Destroy (manual)
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'destroy' }}
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform destroy -auto-approve
-
-      # If not destroying → plan+apply
       - name: Terraform Plan
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.action == 'destroy') }}
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform plan -input=false -out=tfplan
+        env:
+          TF_LOG: INFO
+          TF_IN_AUTOMATION: 1
+        run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.action == 'destroy') }}
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        run: terraform apply -input=false -auto-approve tfplan
+        env:
+          TF_LOG: INFO
+          TF_IN_AUTOMATION: 1
+        run: terraform apply -input=false -no-color -auto-approve tfplan
 
   image_and_deploy:
-    name: Build & Push Image, ECS Deploy
+    name: Build & Push Image, ECS Redeploy
     needs: terraform
     runs-on: ubuntu-latest
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.action == 'destroy') }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS via OIDC (ECS role)
+      # Use LEAST-PRIV ECS role here
+      - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (ECS)
+      - name: WhoAmI (ecs)
         run: aws sts get-caller-identity
 
       - name: Login to Amazon ECR
@@ -112,14 +137,13 @@ jobs:
       - name: Build and push Docker image (latest + sha)
         run: |
           docker buildx create --use --name mybuilder || true
-          # Dockerfile и контекст в infra/
           docker buildx build --platform linux/amd64 \
             -f infra/Dockerfile infra \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG \
             --push
 
-      - name: Force new ECS deployment
+      - name: Force ECS new deployment
         run: |
           aws ecs update-service \
             --cluster $CLUSTER_NAME \
