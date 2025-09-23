@@ -1,4 +1,4 @@
-name: Infra + App Deploy (Terraform + ECS)
+name: Infra + App Deploy (Terraform + ECS, OIDC)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "Type 'destroy' to tear down the stack. Leave empty to deploy."
+        description: "Set to 'destroy' to tear down the stack"
         required: false
         default: ""
         type: string
@@ -22,30 +22,33 @@ env:
   TF_WORKING_DIR: infra
 
 permissions:
-  id-token: write        # OIDC for both jobs
+  id-token: write   # Needed for OIDC
   contents: read
 
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: infra-deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # ===========================
+  # 1) TERRAFORM: init/plan/apply or destroy
+  # ===========================
   terraform:
-    name: Terraform plan/apply or destroy
+    name: Terraform (init/plan/apply or destroy)
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ Широкая роль для создания инфраструктуры
-      - name: Configure AWS via OIDC (Terraform role)
+      # 👉 Широкая роль: ДОЛЖНА быть terraform-роль
+      - name: Configure AWS for Terraform (broad role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (Terraform role)
+      - name: Who am I (Terraform role)
         run: aws sts get-caller-identity
 
       - name: Setup Terraform
@@ -76,7 +79,7 @@ jobs:
           TF_IN_AUTOMATION: 1
         run: terraform validate -no-color
 
-      # 🔥 Destroy (ручной запуск)
+      # Если вручную и action=destroy → выполнить destroy и завершить job
       - name: Terraform Destroy (manual)
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -85,7 +88,7 @@ jobs:
           TF_IN_AUTOMATION: 1
         run: terraform destroy -auto-approve -no-color
 
-      # 🛠️ Plan + Apply (если не destroy)
+      # Иначе обычный план/апплай
       - name: Terraform Plan
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.action == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -102,6 +105,9 @@ jobs:
           TF_IN_AUTOMATION: 1
         run: terraform apply -input=false -no-color -auto-approve tfplan
 
+  # ===========================
+  # 2) IMAGE & DEPLOY: build/push image + ECS update-service
+  # ===========================
   image_and_deploy:
     name: Build & Push Image, ECS Deploy
     needs: terraform
@@ -112,23 +118,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 🔒 Узкая роль: ECR push + ECS update
-      - name: Configure AWS via OIDC (ECS role)
+      # 👉 Узкая роль: ДОЛЖНА быть ecs-роль (ECR push + ECS update)
+      - name: Configure AWS for Deploy (least-priv role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (Deploy role)
+      - name: Who am I (Deploy role)
         run: aws sts get-caller-identity
 
       - name: Login to Amazon ECR
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push Docker image (latest + sha)
         run: |
           docker buildx create --use --name mybuilder || true
-          # Dockerfile и контекст лежат в ./infra
+          # Dockerfile и контекст находятся в infra/
           docker buildx build --platform linux/amd64 \
             -f infra/Dockerfile infra \
             -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
