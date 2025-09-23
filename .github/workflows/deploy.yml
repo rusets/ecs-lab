@@ -33,7 +33,6 @@ permissions:
   id-token: write
   contents: read
 
-# Keep one run per branch; destroy runs are isolated by mode
 concurrency:
   group: deploy-${{ github.ref }}-${{ github.event.inputs.mode || 'deploy' }}
   cancel-in-progress: false
@@ -47,14 +46,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Use BROAD terraform role here
       - name: Configure AWS (terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (terraform)
+      - name: WhoAmI (terraform role)
         run: aws sts get-caller-identity
 
       - name: Setup Terraform
@@ -79,16 +77,16 @@ jobs:
         run: terraform init -input=false -upgrade -no-color
 
       - name: Guard: require DESTROY confirmation
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy' }}
         run: |
-          if [ "${{ inputs.confirm }}" != "DESTROY" ]; then
+          if [ "${{ github.event.inputs.confirm }}" != "DESTROY" ]; then
             echo "Refusing to destroy: you must type DESTROY in the confirmation box."
             exit 1
           fi
           echo "Confirmed DESTROY."
 
       - name: Terraform Destroy
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -96,7 +94,7 @@ jobs:
         run: terraform destroy -auto-approve -no-color
 
       - name: Terraform Plan
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -104,7 +102,7 @@ jobs:
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
-        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
+        if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_LOG: INFO
@@ -115,20 +113,19 @@ jobs:
     name: Build & Push Image, ECS Redeploy
     needs: terraform
     runs-on: ubuntu-latest
-    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
+    if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'destroy') }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Use LEAST-PRIV ECS role here
       - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (ecs)
+      - name: WhoAmI (ecs role)
         run: aws sts get-caller-identity
 
       - name: Login to Amazon ECR
