@@ -3,7 +3,7 @@
 # Port your container listens on (our Nginx inside the image listens on 80)
 variable "app_port" {
   type        = number
-  default     = 80
+  default     = 3000
   description = "Container listening port"
 }
 
