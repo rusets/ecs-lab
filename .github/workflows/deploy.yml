@@ -1,4 +1,4 @@
-name: Infra + App (Deploy / Destroy)
+name: Infra + App (Apply / Destroy)
 
 on:
   push:
@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Choose action: deploy or destroy"
+        description: "Choose action: apply or destroy"
         required: true
         type: choice
-        options: [ deploy, destroy ]
-        default: deploy
+        options: [ apply, destroy ]
+        default: apply
 
 env:
   AWS_REGION: us-east-1
@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-${{ github.ref }}-${{ github.event.inputs.mode || 'deploy' }}
+  group: deploy-${{ github.ref }}-${{ github.event.inputs.mode || 'apply' }}
   cancel-in-progress: false
 
 jobs:
@@ -39,7 +39,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # BROAD role for infra changes
+      # Broad role for Terraform
       - name: Configure AWS (terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -64,34 +64,21 @@ jobs:
 
       - name: Terraform Init
         working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TF_PLUGIN_CACHE_DIR: ~/.terraform.d/plugin-cache
-          TF_LOG: INFO
-          TF_IN_AUTOMATION: 1
         run: terraform init -input=false -upgrade -no-color
 
       - name: Terraform Destroy
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TF_LOG: INFO
-          TF_IN_AUTOMATION: 1
         run: terraform destroy -auto-approve -no-color
 
       - name: Terraform Plan
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TF_LOG: INFO
-          TF_IN_AUTOMATION: 1
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
         if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'destroy') }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TF_LOG: INFO
-          TF_IN_AUTOMATION: 1
         run: terraform apply -input=false -no-color -auto-approve tfplan
 
   image_and_deploy:
@@ -104,7 +91,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # LEAST-PRIV role for push + ECS update
+      # Least-priv ECS role
       - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
