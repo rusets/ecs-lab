@@ -39,12 +39,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Broad role for Terraform
+      # Broad role for Terraform (OIDC)
       - name: Configure AWS (terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-        role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
-        aws-region: us-east-1
+          role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
+          aws-region: us-east-1
 
       - name: WhoAmI (terraform)
         run: aws sts get-caller-identity
@@ -121,8 +121,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Least-priv role for ECR push + ECS update
-            # Least-priv role for ECR push + ECS update
+      # Least-priv role for ECR push + ECS update (OIDC)
       - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -138,7 +137,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build from app/ (not infra/) with GHA cache
+      # Build from app/ with GHA cache
       - name: Build and push Docker image (latest + sha) with cache
         uses: docker/build-push-action@v6
         with:
@@ -156,7 +155,7 @@ jobs:
       - name: Ensure jq is installed
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      # Safer Task Definition flow: pull full TD, strip read-only, replace only image
+      # Pull current task def ARN from the service
       - name: Describe current service (get task def)
         id: svc
         run: |
@@ -168,6 +167,7 @@ jobs:
             --output text > td_arn.txt
           echo "td_arn=$(cat td_arn.txt)" >> $GITHUB_OUTPUT
 
+      # Get full task def JSON
       - name: Get current task definition JSON (full)
         run: |
           aws ecs describe-task-definition \
@@ -176,12 +176,12 @@ jobs:
             --query "taskDefinition" > taskdef.json
           cat taskdef.json
 
+      # Build a new task def JSON with only image updated
       - name: Build new task definition JSON with updated image
         id: build_td
         env:
           IMAGE_SHA: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_SHA_TAG }}
         run: |
-          # Choose container name: prefer "app" if exists, otherwise first container
           CN=$(jq -r '
             ([.containerDefinitions[] | select(.name=="app") | .name] + [.containerDefinitions[0].name])[0]
           ' taskdef.json)
@@ -210,12 +210,13 @@ jobs:
       - name: Update service to new task definition
         run: |
           aws ecs update-service \
-            --cluster "${CLUSTER_NAME}" \
-            --service "${SERVICE_NAME}" \
+            --cluster $CLUSTER_NAME \
+            --service $SERVICE_NAME \
             --task-definition "${{ steps.register_td.outputs.new_td_arn }}" \
-            --region "${AWS_REGION}"
+            --region $AWS_REGION
 
       - name: Wait for service stability
+        timeout-minutes: 10
         run: |
           aws ecs wait services-stable \
             --cluster "${CLUSTER_NAME}" \
