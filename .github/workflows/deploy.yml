@@ -60,7 +60,7 @@ jobs:
           rm -rf "$TF_WORKING_DIR/.terraform"
           rm -f  "$TF_WORKING_DIR/.terraform.lock.hcl"
 
-      # <<< FIX: Make sure cache path exists BEFORE using actions/cache >>>
+      # Make sure cache path exists BEFORE using actions/cache
       - name: Ensure TF plugin cache dir exists
         run: mkdir -p ~/.terraform.d/plugin-cache
 
@@ -134,11 +134,10 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # <<< Buildx + GHA cache for Docker >>> 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build from app/ (not infra/)
+      # Build from app/ (not infra/) with GHA cache
       - name: Build and push Docker image (latest + sha) with cache
         uses: docker/build-push-action@v6
         with:
@@ -152,7 +151,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Register new Task Definition revision with :${GITHUB_SHA} image
+      # jq may not always be present on the runner
+      - name: Ensure jq is installed
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      # Safer Task Definition flow: pull full TD, strip read-only, replace only image
       - name: Describe current service (get task def)
         id: svc
         run: |
@@ -164,7 +167,7 @@ jobs:
             --output text > td_arn.txt
           echo "td_arn=$(cat td_arn.txt)" >> $GITHUB_OUTPUT
 
-      - name: Get current task definition JSON
+      - name: Get current task definition JSON (full)
         run: |
           aws ecs describe-task-definition \
             --task-definition "${{ steps.svc.outputs.td_arn }}" \
@@ -172,39 +175,34 @@ jobs:
             --query "taskDefinition" > taskdef.json
           cat taskdef.json
 
-      - name: Create new task definition w/ updated image
-        id: register_td
+      - name: Build new task definition JSON with updated image
+        id: build_td
+        env:
+          IMAGE_SHA: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_SHA_TAG }}
         run: |
-          IMAGE_SHA="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_SHA_TAG}"
-
-          # build a new containerDefinitions by replacing image in-place
-          NEW_CD=$(jq --arg IMAGE "$IMAGE_SHA" '
-            .containerDefinitions
-            | map(if .name == "app" then .image = $IMAGE else . end)
+          # Choose container name: prefer "app" if exists, otherwise first container
+          CN=$(jq -r '
+            ([.containerDefinitions[] | select(.name=="app") | .name] + [.containerDefinitions[0].name])[0]
           ' taskdef.json)
+          echo "Container name: $CN"
 
-          # prepare full register payload preserving required fields
-          jq --argjson CD "$NEW_CD" '{
-            family: .family,
-            taskRoleArn: .taskRoleArn,
-            executionRoleArn: .executionRoleArn,
-            networkMode: .networkMode,
-            containerDefinitions: $CD,
-            requiresCompatibilities: .requiresCompatibilities,
-            cpu: .cpu,
-            memory: .memory,
-            runtimePlatform: .runtimePlatform
-          }' taskdef.json > register.json
+          jq --arg IMG "$IMAGE_SHA" --arg CN "$CN" '
+            del(.revision, .status, .taskDefinitionArn, .requiresAttributes, .compatibilities, .registeredBy, .registeredAt)
+            | .containerDefinitions = (.containerDefinitions
+                | map(if .name == $CN then .image = $IMG else . end))
+          ' taskdef.json > register.json
 
           echo "=== TaskDef to register ==="
           cat register.json
 
+      - name: Register new task definition
+        id: register_td
+        run: |
           NEW_TD_ARN=$(aws ecs register-task-definition \
             --region "${AWS_REGION}" \
             --cli-input-json file://register.json \
             --query "taskDefinition.taskDefinitionArn" \
             --output text)
-
           echo "new_td_arn=${NEW_TD_ARN}" >> $GITHUB_OUTPUT
           echo "Registered: ${NEW_TD_ARN}"
 
@@ -216,7 +214,6 @@ jobs:
             --task-definition "${{ steps.register_td.outputs.new_td_arn }}" \
             --region "${AWS_REGION}"
 
-      # (Optional) Wait for rollout to complete
       - name: Wait for service stability
         run: |
           aws ecs wait services-stable \
