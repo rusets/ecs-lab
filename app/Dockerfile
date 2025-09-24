@@ -1,20 +1,7 @@
-# Use lightweight Node.js image
-FROM public.ecr.aws/docker/library/node:20-alpine
-
-# Set working directory
+FROM node:20-alpine
 WORKDIR /app
-
-# Copy dependency manifests
-COPY package.json package-lock.json ./
-
-# Install only production dependencies (faster, reproducible)
-RUN npm ci --omit=dev
-
-# Copy application code
+COPY package.json ./
+RUN npm ci --only=production
 COPY src ./src
-
-# Expose port
 EXPOSE 3000
-
-# Run the app
 CMD ["npm", "start"]
