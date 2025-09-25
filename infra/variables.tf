@@ -1,3 +1,5 @@
+# infra/variables.tf
+
 variable "project_name" {
   type        = string
   default     = "docker-ecs-deployment"
@@ -25,5 +27,29 @@ variable "public_subnets" {
 variable "ecr_repo_name" {
   type        = string
   default     = "myapp"
-  description = "ECR repository name"
+  description = "ECR repository name for the application"
+}
+
+variable "desired_count" {
+  type        = number
+  default     = 1
+  description = "Number of ECS service tasks to run"
+}
+
+variable "task_cpu" {
+  type        = string
+  default     = "256"
+  description = "Fargate task CPU units (256 = 0.25 vCPU)"
+}
+
+variable "task_memory" {
+  type        = string
+  default     = "512"
+  description = "Fargate task memory (in MiB)"
+}
+
+variable "app_port" {
+  type        = number
+  default     = 80
+  description = "Port the application listens on"
 }
