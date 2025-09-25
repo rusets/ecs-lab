@@ -37,9 +37,11 @@ jobs:
   terraform:
     name: Terraform ${{ github.event.inputs.mode || 'apply' }}
     runs-on: ubuntu-latest
-    # ВАЖНО: runner.temp допустим на уровне job, а не workflow
     env:
-      TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tfplugincache
+      # Use a path inside the repo workspace (works in all contexts)
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tfplugincache
+      TF_IN_AUTOMATION: 1
+
     steps:
       - uses: actions/checkout@v4
 
@@ -113,6 +115,7 @@ jobs:
     needs: terraform
     runs-on: ubuntu-latest
     if: ${{ github.event.inputs.mode != 'destroy' }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -128,6 +131,7 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Plain docker (no buildx). Builds from app/ and pushes :latest + :SHA
       - name: Build and push Docker image
         run: |
           set -euo pipefail
@@ -224,7 +228,7 @@ jobs:
               --output table || true
 
             if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
-              echo "— $(date -u +'%H:%M:%S') ALB target health"
+              echo "— $(date -u +\"%H:%M:%S\") ALB target health"
               aws elbv2 describe-target-health \
                 --target-group-arn "$TG_ARN" \
                 --region "$AWS_REGION" \
