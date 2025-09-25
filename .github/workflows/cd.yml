@@ -66,10 +66,12 @@ jobs:
         id: tf_cache_restore
         uses: actions/cache/restore@v4
         with:
-          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
-          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
-          restore-keys: |
-            tf-plugins-${{ runner.os }}-${{ runner.arch }}-
+        path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+    # “бессрочный” префикс для поиска последнего подходящего кэша
+         restore-keys: |
+      tf-plugins-${{ runner.os }}-${{ runner.arch }}-
+    # пробуем точный ключ для текущего набора файлов
+    key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
 
       - name: Terraform Init
         id: tf_init
@@ -107,8 +109,9 @@ jobs:
         if: ${{ steps.tf_init.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
-          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
-          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
+        path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+        # уникальный ключ => нет гонок между параллельными запусками
+        key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}-${{ github.run_id }}
 
   build_and_deploy:
     name: Build → Push → Register TD → Update Service → Smart Wait
