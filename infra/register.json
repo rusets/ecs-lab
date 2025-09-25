@@ -1,0 +1,44 @@
+{
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "097635932419.dkr.ecr.us-east-1.amazonaws.com/myapp:d09b50a",
+      "cpu": 0,
+      "portMappings": [
+        {
+          "containerPort": 80,
+          "hostPort": 80,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true,
+      "environment": [],
+      "mountPoints": [],
+      "volumesFrom": [],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/docker-ecs-deployment",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "systemControls": []
+    }
+  ],
+  "family": "docker-ecs-deployment-task",
+  "taskRoleArn": "arn:aws:iam::097635932419:role/docker-ecs-deployment-ecs-task-role",
+  "executionRoleArn": "arn:aws:iam::097635932419:role/docker-ecs-deployment-ecs-exec-role",
+  "networkMode": "awsvpc",
+  "volumes": [],
+  "placementConstraints": [],
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512"
+}

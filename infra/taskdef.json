@@ -1,0 +1,80 @@
+{
+    "taskDefinitionArn": "arn:aws:ecs:us-east-1:097635932419:task-definition/docker-ecs-deployment-task:25",
+    "containerDefinitions": [
+        {
+            "name": "app",
+            "image": "097635932419.dkr.ecr.us-east-1.amazonaws.com/myapp:latest",
+            "cpu": 0,
+            "portMappings": [
+                {
+                    "containerPort": 80,
+                    "hostPort": 80,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "environment": [],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/docker-ecs-deployment",
+                    "awslogs-region": "us-east-1",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            },
+            "systemControls": []
+        }
+    ],
+    "family": "docker-ecs-deployment-task",
+    "taskRoleArn": "arn:aws:iam::097635932419:role/docker-ecs-deployment-ecs-task-role",
+    "executionRoleArn": "arn:aws:iam::097635932419:role/docker-ecs-deployment-ecs-exec-role",
+    "networkMode": "awsvpc",
+    "revision": 25,
+    "volumes": [],
+    "status": "ACTIVE",
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+        },
+        {
+            "name": "ecs.capability.execution-role-awslogs"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.ecr-auth"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        },
+        {
+            "name": "ecs.capability.execution-role-ecr-pull"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+        },
+        {
+            "name": "ecs.capability.task-eni"
+        }
+    ],
+    "placementConstraints": [],
+    "compatibilities": [
+        "EC2",
+        "FARGATE",
+        "MANAGED_INSTANCES"
+    ],
+    "runtimePlatform": {
+        "cpuArchitecture": "X86_64",
+        "operatingSystemFamily": "LINUX"
+    },
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "256",
+    "memory": "512",
+    "registeredAt": "2025-09-24T23:29:34.102000-05:00",
+    "registeredBy": "arn:aws:iam::097635932419:user/ruslan-AWS"
+}
