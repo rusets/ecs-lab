@@ -22,19 +22,13 @@ env:
   SERVICE_NAME: docker-ecs-deployment-svc
   IMAGE_TAG: latest
   IMAGE_SHA_TAG: ${{ inputs.imageSha || github.sha }}
+  TG_NAME: docker-ecs-deployment-tg
   TF_WORKING_DIR: infra
   TF_PLUGIN_CACHE_DIR: $HOME/.terraform.d/plugin-cache
 
 permissions:
   id-token: write
   contents: read
-
-# Рекомендуется привязать к Environment (prod/stage) с ручным approval
-# В UI: Settings → Environments → prod → Required reviewers.
-# Затем раскомментируй ниже:
-# environment:
-#   name: prod
-#   url: https://YOUR-ALB-DNS/
 
 concurrency:
   group: cd-${{ github.ref }}-${{ github.event.inputs.mode || 'apply' }}
@@ -45,10 +39,8 @@ jobs:
     name: Terraform ${{ github.event.inputs.mode || 'apply' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # Широкая роль для Terraform
       - name: Configure AWS (terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -114,16 +106,15 @@ jobs:
           path: ${{ env.TF_PLUGIN_CACHE_DIR }}
           key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/.terraform.lock.hcl') }}
 
-  ecs_deploy:
-    name: ECS Deploy (switch TaskDef to new image)
+  build_and_deploy:
+    name: Build → Push → Register TD → Update Service → Smart Wait
     needs: terraform
     runs-on: ubuntu-latest
     if: ${{ github.event.inputs.mode != 'destroy' }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # Минимальная роль для ECR push/ECS update/ELB describe
+      # Role with: ecr:GetAuthToken + (push to repo) + ecs:Register/Describe/Update + elb:Describe*
       - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -132,6 +123,18 @@ jobs:
 
       - name: WhoAmI (ecs)
         run: aws sts get-caller-identity
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build & push two tags: latest and SHA (для TD используем именно SHA)
+      - name: Build and push Docker image
+        run: |
+          set -euo pipefail
+          docker build -f app/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG app
+          docker tag  $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
 
       - name: Ensure jq is installed
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -155,7 +158,7 @@ jobs:
             --query "taskDefinition" > taskdef.json
           cat taskdef.json
 
-      - name: Build new TaskDef JSON with new image
+      - name: Build new TaskDef JSON with new image (SHA tag)
         id: build_td
         env:
           IMAGE_SHA: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_SHA_TAG }}
@@ -193,10 +196,56 @@ jobs:
             --task-definition "${{ steps.register_td.outputs.new_td_arn }}" \
             --region "${AWS_REGION}"
 
-      - name: Wait for service stability
-        timeout-minutes: 15
+      # SMART WAIT: печатает события ECS и здоровье таргетов ALB
+      - name: Wait for service stability (smart logs)
+        shell: bash
         run: |
-          aws ecs wait services-stable \
-            --cluster "${CLUSTER_NAME}" \
-            --services "${SERVICE_NAME}" \
-            --region "${AWS_REGION}"
+          set -euo pipefail
+          END=$((SECONDS+900)) # 15m timeout
+
+          TG_ARN=$(aws elbv2 describe-target-groups \
+            --names "$TG_NAME" \
+            --region "$AWS_REGION" \
+            --query "TargetGroups[0].TargetGroupArn" \
+            --output text 2>/dev/null || echo "None")
+
+          while [ $SECONDS -lt $END ]; do
+            echo "— $(date -u +'%H:%M:%S') ECS service status"
+            aws ecs describe-services \
+              --cluster "$CLUSTER_NAME" \
+              --services "$SERVICE_NAME" \
+              --region "$AWS_REGION" \
+              --query 'services[0].{
+                desired:desiredCount,
+                running:runningCount,
+                pending:pendingCount,
+                deployments:length(deployments),
+                events:events[0:4].[message]
+              }' \
+              --output table || true
+
+            if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+              echo "— $(date -u +'%H:%M:%S') ALB target health"
+              aws elbv2 describe-target-health \
+                --target-group-arn "$TG_ARN" \
+                --region "$AWS_REGION" \
+                --query 'TargetHealthDescriptions[].{ip:Target.Id,az:Target.AvailabilityZone,state:TargetHealth.State,reason:TargetHealth.Reason}' \
+                --output table || true
+            fi
+
+            NOT_DONE=$(aws ecs describe-services \
+              --cluster "$CLUSTER_NAME" \
+              --services "$SERVICE_NAME" \
+              --region "$AWS_REGION" \
+              --query 'length(services[0].deployments[?rolloutState!=`COMPLETED`])' \
+              --output text 2>/dev/null || echo 1)
+
+            if [ "$NOT_DONE" = "0" ]; then
+              echo "Service is stable ✅"
+              exit 0
+            fi
+            sleep 20
+          done
+
+          echo "Timeout waiting for service stability ❌"
+          exit 1

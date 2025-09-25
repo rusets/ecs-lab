@@ -23,15 +23,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build_and_push:
-    name: Build & Push Docker (plain docker)
+  # PRs: build only (no push, no AWS creds) — works for forks too
+  build_pr:
+    name: Build (PR only, no push)
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # OIDC: минимальная роль для ECR push (и read-only ECS при желании)
-      - name: Configure AWS (ecs role)
+      - name: Build Docker image (no push)
+        run: |
+          docker build -f app/Dockerfile -t local-test:pr app
+
+  # main & manual: build + push latest and sha
+  build_and_push_main:
+    name: Build & Push to ECR (main / manual)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
@@ -40,13 +52,24 @@ jobs:
       - name: WhoAmI
         run: aws sts get-caller-identity
 
+      - name: Preflight: ensure ECR repo exists (friendly error)
+        run: |
+          set -euo pipefail
+          if ! aws ecr describe-repositories \
+            --repository-names "$ECR_REPOSITORY" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "::error::ECR repository '$ECR_REPOSITORY' not found in $AWS_REGION."
+            echo "Run Terraform (apply) first to create it."
+            exit 1
+          fi
+
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Без buildx — обычный docker build/push из app/
       - name: Build & Push
         run: |
+          set -euo pipefail
           docker build -f app/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG app
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
+          docker tag  $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
