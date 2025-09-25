@@ -9,7 +9,7 @@ app.use(express.json());
 // --------- Config & runtime info ----------
 const startedAt = Date.now();
 const INFO = {
-  appName: process.env.APP_NAME || 'ruslan aws 🚀',
+  appName: process.env.APP_NAME || 'Ruslan AWS 🚀',
   env: process.env.APP_ENV || 'prod',
   version: process.env.APP_VERSION || '1.0.0',
   gitSha: process.env.GIT_SHA || process.env.IMAGE_SHA || process.env.GITHUB_SHA || 'unknown',
