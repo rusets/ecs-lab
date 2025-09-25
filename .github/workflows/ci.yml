@@ -1,4 +1,4 @@
-name: CI – Build & Push Image
+name: CI – Build & (optionally) Push Image
 
 on:
   pull_request:
@@ -23,27 +23,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # PRs: build only (no push, no AWS creds) — works for forks too
-  build_pr:
-    name: Build (PR only, no push)
+  build_and_push:
+    name: Build (PR) and Build+Push (main/manual)
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'pull_request' }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Build Docker image (no push)
-        run: |
-          docker build -f app/Dockerfile -t local-test:pr app
-
-  # main & manual: build + push latest and sha
-  build_and_push_main:
-    name: Build & Push to ECR (main / manual)
-    runs-on: ubuntu-latest
-    if: ${{ github.event_name != 'pull_request' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS via OIDC (ecs role)
+      - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
@@ -52,24 +40,23 @@ jobs:
       - name: WhoAmI
         run: aws sts get-caller-identity
 
-      - name: Preflight: ensure ECR repo exists (friendly error)
-        run: |
-          set -euo pipefail
-          if ! aws ecr describe-repositories \
-            --repository-names "$ECR_REPOSITORY" \
-            --region "$AWS_REGION" >/dev/null 2>&1; then
-            echo "::error::ECR repository '$ECR_REPOSITORY' not found in $AWS_REGION."
-            echo "Run Terraform (apply) first to create it."
-            exit 1
-          fi
-
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build & Push
+      - name: Build image (no push on PR)
         run: |
-          set -euo pipefail
           docker build -f app/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG app
-          docker tag  $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
+
+      # Only push for main branch pushes or manual runs (not PRs)
+      - name: Ensure ECR repo exists (idempotent)
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 \
+          || aws ecr create-repository --repository-name "$ECR_REPOSITORY" >/dev/null
+
+      - name: Push images to ECR
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
