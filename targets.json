@@ -1,0 +1,7 @@
+[
+    {
+        "Id": "10.10.1.88",
+        "Port": 3000,
+        "AvailabilityZone": "us-east-1a"
+    }
+]

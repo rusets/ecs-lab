@@ -1,0 +1,202 @@
+name: CD – Infra Apply/Destroy + ECS Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "apply or destroy"
+        required: true
+        type: choice
+        options: [ apply, destroy ]
+        default: apply
+      imageSha:
+        description: "Optional image SHA tag (default: last commit)"
+        required: false
+        type: string
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 097635932419.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: myapp
+  CLUSTER_NAME: docker-ecs-deployment-cluster
+  SERVICE_NAME: docker-ecs-deployment-svc
+  IMAGE_TAG: latest
+  IMAGE_SHA_TAG: ${{ inputs.imageSha || github.sha }}
+  TF_WORKING_DIR: infra
+  TF_PLUGIN_CACHE_DIR: $HOME/.terraform.d/plugin-cache
+
+permissions:
+  id-token: write
+  contents: read
+
+# Рекомендуется привязать к Environment (prod/stage) с ручным approval
+# В UI: Settings → Environments → prod → Required reviewers.
+# Затем раскомментируй ниже:
+# environment:
+#   name: prod
+#   url: https://YOUR-ALB-DNS/
+
+concurrency:
+  group: cd-${{ github.ref }}-${{ github.event.inputs.mode || 'apply' }}
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    name: Terraform ${{ github.event.inputs.mode || 'apply' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Широкая роль для Terraform
+      - name: Configure AWS (terraform role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: WhoAmI (terraform)
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Ensure TF plugin cache dir exists
+        run: mkdir -p "${{ env.TF_PLUGIN_CACHE_DIR }}"
+
+      - name: Restore Terraform plugin cache
+        id: tf_cache_restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/.terraform.lock.hcl') }}
+          restore-keys: |
+            tf-plugins-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Terraform Init
+        id: tf_init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          TF_IN_AUTOMATION: 1
+        run: terraform init -reconfigure -upgrade -input=false -no-color
+
+      - name: Terraform Destroy
+        if: ${{ github.event.inputs.mode == 'destroy' }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          TF_IN_AUTOMATION: 1
+        run: terraform destroy -auto-approve -no-color
+
+      - name: Terraform Plan
+        if: ${{ github.event.inputs.mode != 'destroy' }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          TF_IN_AUTOMATION: 1
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      - name: Terraform Apply
+        if: ${{ github.event.inputs.mode != 'destroy' }}
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          TF_IN_AUTOMATION: 1
+        run: terraform apply -input=false -no-color -auto-approve tfplan
+
+      - name: Save Terraform plugin cache
+        if: ${{ steps.tf_init.outcome == 'success' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/.terraform.lock.hcl') }}
+
+  ecs_deploy:
+    name: ECS Deploy (switch TaskDef to new image)
+    needs: terraform
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.mode != 'destroy' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Минимальная роль для ECR push/ECS update/ELB describe
+      - name: Configure AWS (ecs role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: WhoAmI (ecs)
+        run: aws sts get-caller-identity
+
+      - name: Ensure jq is installed
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Get current TaskDef ARN from Service
+        id: svc
+        run: |
+          aws ecs describe-services \
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}" \
+            --region "${AWS_REGION}" \
+            --query "services[0].taskDefinition" \
+            --output text > td_arn.txt
+          echo "td_arn=$(cat td_arn.txt)" >> $GITHUB_OUTPUT
+
+      - name: Get full TaskDef JSON
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ steps.svc.outputs.td_arn }}" \
+            --region "${AWS_REGION}" \
+            --query "taskDefinition" > taskdef.json
+          cat taskdef.json
+
+      - name: Build new TaskDef JSON with new image
+        id: build_td
+        env:
+          IMAGE_SHA: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_SHA_TAG }}
+        run: |
+          CN=$(jq -r '
+            ([.containerDefinitions[] | select(.name=="app") | .name] + [.containerDefinitions[0].name])[0]
+          ' taskdef.json)
+          echo "Container name: $CN"
+
+          jq --arg IMG "$IMAGE_SHA" --arg CN "$CN" '
+            del(.revision, .status, .taskDefinitionArn, .requiresAttributes, .compatibilities, .registeredBy, .registeredAt)
+            | .containerDefinitions = (.containerDefinitions
+                | map(if .name == $CN then .image = $IMG else . end))
+          ' taskdef.json > register.json
+
+          echo "=== TaskDef to register ==="
+          cat register.json
+
+      - name: Register new TaskDef
+        id: register_td
+        run: |
+          NEW_TD_ARN=$(aws ecs register-task-definition \
+            --region "${AWS_REGION}" \
+            --cli-input-json file://register.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+          echo "new_td_arn=${NEW_TD_ARN}" >> $GITHUB_OUTPUT
+          echo "Registered: ${NEW_TD_ARN}"
+
+      - name: Update Service to new TaskDef
+        run: |
+          aws ecs update-service \
+            --cluster "${CLUSTER_NAME}" \
+            --service "${SERVICE_NAME}" \
+            --task-definition "${{ steps.register_td.outputs.new_td_arn }}" \
+            --region "${AWS_REGION}"
+
+      - name: Wait for service stability
+        timeout-minutes: 15
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${CLUSTER_NAME}" \
+            --services "${SERVICE_NAME}" \
+            --region "${AWS_REGION}"
