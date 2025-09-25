@@ -7,10 +7,10 @@ on:
         description: "apply or destroy"
         required: true
         type: choice
-        options: [ apply, destroy ]
+        options: [apply, destroy]
         default: apply
       imageSha:
-        description: "Optional image SHA tag (default: last commit)"
+        description: "Optional image SHA tag (default: last commit SHA)"
         required: false
         type: string
 
@@ -24,26 +24,24 @@ env:
   IMAGE_SHA_TAG: ${{ inputs.imageSha && inputs.imageSha || github.sha }}
   TG_NAME: docker-ecs-deployment-tg
   TF_WORKING_DIR: infra
+  TF_PLUGIN_CACHE_DIR: .tfplugincache
 
 permissions:
   id-token: write
   contents: read
 
 concurrency:
-  group: cd-${{ github.ref }}-${{ github.event.inputs.mode || 'apply' }}
+  group: cd-${{ github.ref }}-${{ inputs.mode || 'apply' }}
   cancel-in-progress: false
 
 jobs:
   terraform:
-    name: Terraform ${{ github.event.inputs.mode || 'apply' }}
+    name: Terraform ${{ inputs.mode || 'apply' }}
     runs-on: ubuntu-latest
-    env:
-      # Use a path inside the repo workspace (works in all contexts)
-      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.tfplugincache
-      TF_IN_AUTOMATION: 1
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Configure AWS (terraform role)
         uses: aws-actions/configure-aws-credentials@v4
@@ -66,12 +64,10 @@ jobs:
         id: tf_cache_restore
         uses: actions/cache/restore@v4
         with:
-        path: ${{ env.TF_PLUGIN_CACHE_DIR }}
-    # “бессрочный” префикс для поиска последнего подходящего кэша
-         restore-keys: |
-      tf-plugins-${{ runner.os }}-${{ runner.arch }}-
-    # пробуем точный ключ для текущего набора файлов
-    key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
+          restore-keys: |
+            tf-plugins-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Terraform Init
         id: tf_init
@@ -82,7 +78,7 @@ jobs:
         run: terraform init -reconfigure -upgrade -input=false -no-color
 
       - name: Terraform Destroy
-        if: ${{ github.event.inputs.mode == 'destroy' }}
+        if: ${{ inputs.mode == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
@@ -90,7 +86,7 @@ jobs:
         run: terraform destroy -auto-approve -no-color
 
       - name: Terraform Plan
-        if: ${{ github.event.inputs.mode != 'destroy' }}
+        if: ${{ inputs.mode != 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
@@ -98,7 +94,7 @@ jobs:
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
-        if: ${{ github.event.inputs.mode != 'destroy' }}
+        if: ${{ inputs.mode != 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
@@ -109,18 +105,18 @@ jobs:
         if: ${{ steps.tf_init.outcome == 'success' }}
         uses: actions/cache/save@v4
         with:
-        path: ${{ env.TF_PLUGIN_CACHE_DIR }}
-        # уникальный ключ => нет гонок между параллельными запусками
-        key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}-${{ github.run_id }}
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
+          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}-${{ github.run_id }}
 
   build_and_deploy:
     name: Build → Push → Register TD → Update Service → Smart Wait
     needs: terraform
+    if: ${{ inputs.mode != 'destroy' }}
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.mode != 'destroy' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
@@ -134,7 +130,11 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Plain docker (no buildx). Builds from app/ and pushes :latest + :SHA
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 \
+          || aws ecr create-repository --repository-name "$ECR_REPOSITORY" >/dev/null
+
       - name: Build and push Docker image
         run: |
           set -euo pipefail
@@ -143,7 +143,7 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
 
-      - name: Ensure jq is installed
+      - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Get current TaskDef ARN from Service
@@ -165,7 +165,7 @@ jobs:
             --query "taskDefinition" > taskdef.json
           cat taskdef.json
 
-      - name: Build new TaskDef JSON with new image (SHA tag)
+      - name: Build new TaskDef JSON with SHA image
         id: build_td
         env:
           IMAGE_SHA: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_SHA_TAG }}
@@ -207,8 +207,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          END=$((SECONDS+900)) # 15m timeout
-
+          END=$((SECONDS+900)) # 15 minutes
           TG_ARN=$(aws elbv2 describe-target-groups \
             --names "$TG_NAME" \
             --region "$AWS_REGION" \
@@ -231,7 +230,7 @@ jobs:
               --output table || true
 
             if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
-              echo "— $(date -u +\"%H:%M:%S\") ALB target health"
+              echo "— $(date -u +'%H:%M:%S') ALB target health"
               aws elbv2 describe-target-health \
                 --target-group-arn "$TG_ARN" \
                 --region "$AWS_REGION" \
