@@ -9,7 +9,7 @@ app.use(express.json());
 // --------- Config & runtime info ----------
 const startedAt = Date.now();
 const INFO = {
-  appName: process.env.APP_NAME || 'My Pretty App',
+  appName: process.env.APP_NAME || 'ruslan aws 🚀',
   env: process.env.APP_ENV || 'prod',
   version: process.env.APP_VERSION || '1.0.0',
   gitSha: process.env.GIT_SHA || process.env.IMAGE_SHA || process.env.GITHUB_SHA || 'unknown',
@@ -113,33 +113,118 @@ app.get('*', (_req, res) => {
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>${INFO.appName}</title>
 <style>
-:root{--bg:#0b1220;--panel:#0e1628;--card:#0f1b33;--muted:#94a3b8;--text:#e2e8f0;--ring:#60a5fa;--accent1:#7c3aed;--accent2:#06b6d4}
+:root{
+  --bg:#05060b; --panel:#0a0d17; --card:#0b1120; --muted:#93a3b8; --text:#e5eef9;
+  --ring:#60a5fa; --glow:#22d3ee; --rgb1:#ff00ea; --rgb2:#00e5ff; --rgb3:#00ff88;
+}
+
 *{box-sizing:border-box}
-body{margin:0;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto;background:
-radial-gradient(1200px 700px at 10% 0%,#0d1b36 0%,#0b1220 40%),var(--bg);color:var(--text)}
-header{padding:28px 16px;background:linear-gradient(90deg,var(--accent1) 0%,var(--accent2) 100%);box-shadow:0 10px 40px rgba(0,0,0,.25)}
-h1{margin:0;font-size:28px;letter-spacing:.5px}
-.wrap{max-width:1180px;margin:36px auto;padding:0 18px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
-.panel{background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.08);border-radius:20px;box-shadow:0 12px 60px rgba(0,0,0,.35);padding:22px}
-.card{margin-top:18px;background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:18px}
-.badge{padding:6px 10px;border-radius:999px;background:#0b1220;border:1px solid rgba(255,255,255,.08);font-size:12px;color:var(--muted)}
+html,body{height:100%}
+body{
+  margin:0; font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Inter,Arial;
+  color:var(--text); background: radial-gradient(1200px 700px at 10% -10%, #0b1220 0%, #070914 50%, var(--bg) 100%);
+  overflow-x:hidden;
+}
+
+/* animated rgb aurora */
+body::before, body::after{
+  content:""; position:fixed; inset:-20%;
+  filter:blur(40px); opacity:.35; pointer-events:none; mix-blend-mode:screen;
+  background:
+    radial-gradient(600px 300px at 20% 20%, var(--rgb1), transparent 60%),
+    radial-gradient(600px 300px at 80% 30%, var(--rgb2), transparent 60%),
+    radial-gradient(600px 300px at 50% 80%, var(--rgb3), transparent 60%);
+  animation: float 18s linear infinite reverse;
+}
+body::after{ animation-duration: 26s; opacity:.25; transform: rotate(10deg); }
+
+@keyframes float{
+  0%{transform:translateY(0)}
+  50%{transform:translateY(2%)}
+  100%{transform:translateY(0)}
+}
+
+header{
+  position:sticky; top:0; z-index:10;
+  padding:28px 16px;
+  background:
+    linear-gradient(90deg, rgba(5,6,11,.8), rgba(5,6,11,.2)),
+    linear-gradient(90deg, var(--rgb1), var(--rgb2), var(--rgb3));
+  background-size: 100% 100%, 300% 100%;
+  animation: rgbbar 12s ease-in-out infinite;
+  box-shadow: 0 10px 40px rgba(0,0,0,.45);
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+@keyframes rgbbar{ 0%{background-position: 0 0, 0 0} 50%{background-position: 0 0, 100% 0} 100%{background-position: 0 0, 0 0} }
+
+h1{margin:0; font-size:28px; letter-spacing:.5px; text-shadow: 0 2px 18px rgba(96,165,250,.35);}
+
+.wrap{max-width:1180px; margin:36px auto; padding:0 18px}
+.grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:14px}
+
+.panel{
+  background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.02));
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 20px;
+  box-shadow: 0 12px 60px rgba(0,0,0,.35), 0 0 0 1px rgba(34,211,238,.1) inset;
+  padding: 22px;
+  backdrop-filter: saturate(120%) blur(6px);
+}
+
+.card{
+  margin-top:18px;
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 18px; padding:18px;
+}
+
+.badge{
+  padding:6px 10px; border-radius:999px; background:rgba(9,10,18,.85);
+  border:1px solid rgba(255,255,255,.08); font-size:12px; color:var(--muted);
+  box-shadow: 0 0 0 1px rgba(34,211,238,.12) inset, 0 0 18px rgba(34,211,238,.05);
+}
+.row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
 .muted{color:var(--muted)}
-.btn{width:100%;padding:14px 16px;border-radius:14px;border:1px solid rgba(255,255,255,.08);
-background:linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.02));color:var(--text);font-weight:700;letter-spacing:.3px;cursor:pointer;
-transition:.15s transform,.15s box-shadow,.15s border-color}
-.btn:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(0,0,0,.35);border-color:rgba(96,165,250,.45)}
-.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
-.kpi{padding:16px;border-radius:14px;background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,.015));border:1px solid rgba(255,255,255,.08)}
-.kpi .v{font-size:22px;font-weight:800}
-.kpi .t{font-size:12px;color:var(--muted)}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-pre{white-space:pre-wrap;word-break:break-word;background:#0b1220;border:1px solid rgba(255,255,255,.08);padding:12px;border-radius:12px;max-height:280px;overflow:auto}
-@media (max-width:960px){.kpis{grid-template-columns:repeat(2,1fr)}}
+
+.btn{
+  width:100%; padding:14px 16px; border-radius:14px;
+  border:1px solid rgba(255,255,255,.08);
+  background:
+    radial-gradient(120% 180% at 0% 0%, rgba(255,255,255,.05), rgba(255,255,255,.02)),
+    linear-gradient(90deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+  color:var(--text); font-weight:800; letter-spacing:.3px; cursor:pointer;
+  transition:.15s transform,.15s box-shadow,.15s border-color, .2s filter;
+  text-shadow: 0 1px 10px rgba(96,165,250,.35);
+  box-shadow: 0 0 0 1px rgba(34,211,238,.12) inset, 0 12px 28px rgba(0,0,0,.25);
+}
+.btn:hover{
+  transform:translateY(-3px) scale(1.01);
+  border-color: rgba(96,165,250,.55);
+  filter: drop-shadow(0 0 12px rgba(96,165,250,.35));
+}
+.btn:active{ transform: translateY(-1px) }
+
+.kpis{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px}
+.kpi{
+  padding:16px; border-radius:14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+  border:1px solid rgba(255,255,255,.08);
+  box-shadow: 0 0 0 1px rgba(34,211,238,.08) inset, 0 6px 22px rgba(0,0,0,.25);
+}
+.kpi .v{font-size:22px; font-weight:900; letter-spacing:.2px}
+.kpi .t{font-size:12px; color:var(--muted)}
+
+pre{
+  white-space:pre-wrap; word-break:break-word; background:#070a14;
+  border:1px solid rgba(255,255,255,.08); padding:12px; border-radius:12px;
+  max-height:320px; overflow:auto; box-shadow: inset 0 0 0 1px rgba(34,211,238,.08);
+}
+
+@media (max-width:960px){ .kpis{grid-template-columns:repeat(2,1fr)} }
 </style>
 </head>
 <body>
-<header><h1>${INFO.appName} ✨</h1></header>
+<header><h1>${INFO.appName}</h1></header>
 <div class="wrap">
   <section class="panel">
     <div class="row">
