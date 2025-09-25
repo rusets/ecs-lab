@@ -21,10 +21,10 @@ env:
   CLUSTER_NAME: docker-ecs-deployment-cluster
   SERVICE_NAME: docker-ecs-deployment-svc
   IMAGE_TAG: latest
-  IMAGE_SHA_TAG: ${{ inputs.imageSha || github.sha }}
+  IMAGE_SHA_TAG: ${{ inputs.imageSha && inputs.imageSha || github.sha }}
   TG_NAME: docker-ecs-deployment-tg
   TF_WORKING_DIR: infra
-  TF_PLUGIN_CACHE_DIR: $HOME/.terraform.d/plugin-cache
+  TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tfplugincache
 
 permissions:
   id-token: write
@@ -63,7 +63,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.TF_PLUGIN_CACHE_DIR }}
-          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/.terraform.lock.hcl') }}
+          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}
           restore-keys: |
             tf-plugins-${{ runner.os }}-${{ runner.arch }}-
 
@@ -100,11 +100,11 @@ jobs:
         run: terraform apply -input=false -no-color -auto-approve tfplan
 
       - name: Save Terraform plugin cache
-        if: ${{ steps.tf_init.outcome == 'success' }}
+        if: ${{ steps.tf_init.outcome == 'success' && steps.tf_cache_restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ env.TF_PLUGIN_CACHE_DIR }}
-          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/.terraform.lock.hcl') }}
+          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   build_and_deploy:
     name: Build → Push → Register TD → Update Service → Smart Wait
@@ -114,7 +114,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Role with: ecr:GetAuthToken + (push to repo) + ecs:Register/Describe/Update + elb:Describe*
       - name: Configure AWS (ecs role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -127,7 +126,11 @@ jobs:
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Build & push two tags: latest and SHA (для TD используем именно SHA)
+      - name: Ensure ECR repo exists (idempotent)
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 \
+          || aws ecr create-repository --repository-name "$ECR_REPOSITORY" >/dev/null
+
       - name: Build and push Docker image
         run: |
           set -euo pipefail
@@ -196,7 +199,6 @@ jobs:
             --task-definition "${{ steps.register_td.outputs.new_td_arn }}" \
             --region "${AWS_REGION}"
 
-      # SMART WAIT: печатает события ECS и здоровье таргетов ALB
       - name: Wait for service stability (smart logs)
         shell: bash
         run: |
