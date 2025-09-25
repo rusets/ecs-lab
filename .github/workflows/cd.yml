@@ -47,9 +47,6 @@ jobs:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-terraform-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (terraform)
-        run: aws sts get-caller-identity
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -59,7 +56,6 @@ jobs:
         run: mkdir -p "${{ env.TF_PLUGIN_CACHE_DIR }}"
 
       - name: Restore Terraform plugin cache
-        id: tf_cache_restore
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.TF_PLUGIN_CACHE_DIR }}
@@ -68,7 +64,6 @@ jobs:
             tf-plugins-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Terraform Init
-        id: tf_init
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
           TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
@@ -78,33 +73,17 @@ jobs:
       - name: Terraform Destroy
         if: ${{ github.event.inputs.mode == 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
-          TF_IN_AUTOMATION: 1
         run: terraform destroy -auto-approve -no-color
 
       - name: Terraform Plan
         if: ${{ github.event.inputs.mode != 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
-          TF_IN_AUTOMATION: 1
         run: terraform plan -input=false -no-color -out=tfplan
 
       - name: Terraform Apply
         if: ${{ github.event.inputs.mode != 'destroy' }}
         working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          TF_PLUGIN_CACHE_DIR: ${{ env.TF_PLUGIN_CACHE_DIR }}
-          TF_IN_AUTOMATION: 1
         run: terraform apply -input=false -no-color -auto-approve tfplan
-
-      - name: Save Terraform plugin cache
-        if: ${{ steps.tf_init.outcome == 'success' && steps.tf_cache_restore.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.TF_PLUGIN_CACHE_DIR }}
-          key: tf-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.tf', '**/*.tfvars', '**/.terraform.lock.hcl') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   build_and_deploy:
     name: Build → Push → Register TD → Update Service → Smart Wait
@@ -120,20 +99,11 @@ jobs:
           role-to-assume: arn:aws:iam::097635932419:role/github-actions-ecs-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: WhoAmI (ecs)
-        run: aws sts get-caller-identity
-
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Ensure ECR repo exists (idempotent)
-        run: |
-          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 \
-          || aws ecr create-repository --repository-name "$ECR_REPOSITORY" >/dev/null
-
       - name: Build and push Docker image
         run: |
-          set -euo pipefail
           docker build -f app/Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG app
           docker tag  $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
@@ -159,26 +129,14 @@ jobs:
             --task-definition "${{ steps.svc.outputs.td_arn }}" \
             --region "${AWS_REGION}" \
             --query "taskDefinition" > taskdef.json
-          cat taskdef.json
 
       - name: Build new TaskDef JSON with new image (SHA tag)
-        id: build_td
-        env:
-          IMAGE_SHA: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_SHA_TAG }}
         run: |
-          CN=$(jq -r '
-            ([.containerDefinitions[] | select(.name=="app") | .name] + [.containerDefinitions[0].name])[0]
-          ' taskdef.json)
-          echo "Container name: $CN"
-
-          jq --arg IMG "$IMAGE_SHA" --arg CN "$CN" '
+          CN=$(jq -r '.containerDefinitions[0].name' taskdef.json)
+          jq --arg IMG "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_SHA_TAG" --arg CN "$CN" '
             del(.revision, .status, .taskDefinitionArn, .requiresAttributes, .compatibilities, .registeredBy, .registeredAt)
-            | .containerDefinitions = (.containerDefinitions
-                | map(if .name == $CN then .image = $IMG else . end))
+            | .containerDefinitions = (.containerDefinitions | map(if .name == $CN then .image = $IMG else . end))
           ' taskdef.json > register.json
-
-          echo "=== TaskDef to register ==="
-          cat register.json
 
       - name: Register new TaskDef
         id: register_td
@@ -189,7 +147,6 @@ jobs:
             --query "taskDefinition.taskDefinitionArn" \
             --output text)
           echo "new_td_arn=${NEW_TD_ARN}" >> $GITHUB_OUTPUT
-          echo "Registered: ${NEW_TD_ARN}"
 
       - name: Update Service to new TaskDef
         run: |
@@ -200,54 +157,16 @@ jobs:
             --region "${AWS_REGION}"
 
       - name: Wait for service stability (smart logs)
-        shell: bash
         run: |
-          set -euo pipefail
-          END=$((SECONDS+900)) # 15m timeout
-
-          TG_ARN=$(aws elbv2 describe-target-groups \
-            --names "$TG_NAME" \
-            --region "$AWS_REGION" \
-            --query "TargetGroups[0].TargetGroupArn" \
-            --output text 2>/dev/null || echo "None")
-
+          END=$((SECONDS+900))
           while [ $SECONDS -lt $END ]; do
-            echo "— $(date -u +'%H:%M:%S') ECS service status"
             aws ecs describe-services \
               --cluster "$CLUSTER_NAME" \
               --services "$SERVICE_NAME" \
               --region "$AWS_REGION" \
-              --query 'services[0].{
-                desired:desiredCount,
-                running:runningCount,
-                pending:pendingCount,
-                deployments:length(deployments),
-                events:events[0:4].[message]
-              }' \
-              --output table || true
-
-            if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
-              echo "— $(date -u +'%H:%M:%S') ALB target health"
-              aws elbv2 describe-target-health \
-                --target-group-arn "$TG_ARN" \
-                --region "$AWS_REGION" \
-                --query 'TargetHealthDescriptions[].{ip:Target.Id,az:Target.AvailabilityZone,state:TargetHealth.State,reason:TargetHealth.Reason}' \
-                --output table || true
-            fi
-
-            NOT_DONE=$(aws ecs describe-services \
-              --cluster "$CLUSTER_NAME" \
-              --services "$SERVICE_NAME" \
-              --region "$AWS_REGION" \
-              --query 'length(services[0].deployments[?rolloutState!=`COMPLETED`])' \
-              --output text 2>/dev/null || echo 1)
-
-            if [ "$NOT_DONE" = "0" ]; then
-              echo "Service is stable ✅"
-              exit 0
-            fi
+              --query 'services[0].{desired:desiredCount,running:runningCount,events:events[0:3].[message]}' \
+              --output table
             sleep 20
           done
-
-          echo "Timeout waiting for service stability ❌"
           exit 1
+        
