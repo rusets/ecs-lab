@@ -10,11 +10,12 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 # Копируем остальные файлы приложения
-COPY . .
+COPY src ./src
+COPY public ./public
 
 # Приложение должно слушать 80 (ECS маппит containerPort=80)
 ENV PORT=80
 EXPOSE 80
 
-# Если у тебя Express-сервер (путь поправь, если другой файл)
+# Запуск Express-сервера
 CMD ["node", "src/server.js"]
