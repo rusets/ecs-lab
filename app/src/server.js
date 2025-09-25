@@ -1,20 +1,21 @@
 const express = require('express');
-const path = require('path');
 const app = express();
-const PORT = process.env.PORT || 80;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const APP_MESSAGE = process.env.APP_MESSAGE || 'Hello from container! (APP_MESSAGE not set)';
 
-// статические файлы (если есть красивая страница)
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.get('/health', (req, res) => res.status(200).json({status: 'ok'}));
 
-// health
-app.get('/health', (_req, res) => res.status(200).send('OK'));
-
-// fallback на index.html (SPA) или простая страница
-app.get('*', (_req, res) => {
-  const index = path.join(__dirname, '..', 'public', 'index.html');
-  res.sendFile(index, err => {
-    if (err) res.status(200).send(`<h1>My Pretty App</h1><p>It works!</p>`);
-  });
+app.get('/', (req, res) => {
+  res.type('html').send(`
+    <html>
+      <head><title>docker-ecs-deployment</title></head>
+      <body style="font-family: sans-serif; max-width: 720px; margin: 40px auto;">
+        <h1>🐳 App on EKS + External Secrets</h1>
+        <p><strong>APP_MESSAGE</strong>: ${APP_MESSAGE}</p>
+        <p>Try the health check: <a href="/health">/health</a></p>
+      </body>
+    </html>
+  `);
 });
 
-app.listen(PORT, () => console.log(`Server listening on ${PORT}`));
+app.listen(PORT, () => console.log('Server listening on', PORT));
