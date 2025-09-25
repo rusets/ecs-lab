@@ -18,13 +18,12 @@ resource "aws_lb_target_group" "app" {
   target_type = "ip"
 
   health_check {
-    path                = "/"
-    matcher             = "200-399"
-    interval            = 30
-    healthy_threshold   = 2
-    unhealthy_threshold = 3
-  }
-
+  path                = "/health"
+  interval            = 15   # по умолчанию 30
+  timeout             = 5
+  healthy_threshold   = 2    # по умолчанию 5
+  unhealthy_threshold = 2
+}
   tags = { Project = var.project_name }
 }
 

@@ -1,6 +1,6 @@
 ############################################
 # ECS Task Definition + Service (Fargate)
-# Контейнер слушает var.app_port (по умолчанию 3000)
+# Контейнер слушает var.app_port (рекомендуется 80)
 ############################################
 
 # variables (должны быть объявлены где-то у тебя)
@@ -9,7 +9,7 @@
 # variable "desired_count" { type = number }
 # variable "task_cpu"      { type = string }
 # variable "task_memory"   { type = string }
-# variable "app_port"      { type = number } # default = 3000
+# variable "app_port"      { type = number } # рекомендую default = 80
 
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project_name}-task"
@@ -40,6 +40,10 @@ resource "aws_ecs_task_definition" "app" {
           awslogs-stream-prefix = "ecs"
         }
       }
+      # если нужно — можно добавить переменные окружения:
+      # environment = [
+      #   { name = "PORT", value = tostring(var.app_port) }
+      # ]
     }
   ])
 
@@ -59,6 +63,7 @@ resource "aws_ecs_service" "app" {
   launch_type     = "FARGATE"
   propagate_tags  = "SERVICE"
 
+  # Рекомендуется private subnets + NAT; если пока нет NAT — оставляй public+assign_public_ip=true
   network_configuration {
     subnets          = module.vpc.public_subnets
     security_groups  = [aws_security_group.service.id]
@@ -71,8 +76,19 @@ resource "aws_ecs_service" "app" {
     container_port   = var.app_port
   }
 
+  # Тюнинг деплоя и прогрева
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  health_check_grace_period_seconds  = 60
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   lifecycle {
-    ignore_changes = [task_definition] # чтобы update-service через CI не ломал план
+    # чтобы обновление task definition из CI (aws ecs update-service) не вызывало лишние дифы
+    ignore_changes = [task_definition]
   }
 
   depends_on = [
